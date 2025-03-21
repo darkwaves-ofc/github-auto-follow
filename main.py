@@ -5,6 +5,8 @@ import logging
 import threading
 from selenium import webdriver
 from selenium.webdriver.common.by import By
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
 from dotenv import load_dotenv
 
 # Setup logging
@@ -60,8 +62,15 @@ def get_user_agreement():
 
 def load_credentials():
     """Loads GitHub credentials from environment variables."""
+    load_dotenv()
     github_username = os.getenv("GITHUB_USERNAME")
     github_password = os.getenv("GITHUB_PASSWORD")
+    
+    if not github_username or not github_password:
+        logging.warning("GitHub credentials not found in environment variables.")
+        github_username = input("Enter your GitHub username: ").strip()
+        github_password = input("Enter your GitHub password: ").strip()
+    
     return github_username, github_password
 
 
@@ -107,6 +116,8 @@ def follow_stargazers(driver, repo_url, page, delay, follow_count):
     if not follow_buttons:
         return False, follow_count
     for button in follow_buttons:
+        if stop_thread:
+            break
         try:
             parent_element = button.find_element(By.XPATH, "./ancestor::div[contains(@class, 'd-flex')]")
             username_element = parent_element.find_element(By.XPATH, ".//a[contains(@data-hovercard-type, 'user')]")
@@ -129,40 +140,78 @@ def click_follow_button(button, delay, username, follow_count):
     return follow_count
 
 
+def create_chrome_driver():
+    """Creates and returns a Chrome WebDriver instance with custom options."""
+    chrome_options = Options()
+    
+    # Add options to avoid the "user data directory is already in use" error
+    chrome_options.add_argument("--no-sandbox")
+    chrome_options.add_argument("--disable-dev-shm-usage")
+    
+    # Create a unique user data directory
+    temp_dir = f"/tmp/chrome_profile_{int(time.time())}"
+    chrome_options.add_argument(f"--user-data-dir={temp_dir}")
+    
+    # Additional options for headless mode if needed
+    # chrome_options.add_argument("--headless")
+    
+    try:
+        return webdriver.Chrome(options=chrome_options)
+    except Exception as e:
+        logging.error(f"Error creating Chrome WebDriver: {e}")
+        
+        # Fallback approach using Service
+        try:
+            service = Service()
+            return webdriver.Chrome(service=service, options=chrome_options)
+        except Exception as e:
+            logging.error(f"Error creating Chrome WebDriver with Service: {e}")
+            raise
+
+
 def main():
     """Main function to run the script."""
     global stop_thread
 
     display_intro()
     get_user_agreement()
-    load_dotenv()
     github_username, github_password = load_credentials()
     repo_url, start_page, speed_mode = get_user_inputs()
     delay = set_delay(speed_mode)
 
     logging.info("Starting now")
 
-    driver = webdriver.Chrome()
-    github_login(driver, github_username, github_password)
-
-    stop_listener = threading.Thread(target=listen_for_stop)
-    stop_listener.start()
-
-    page = start_page
-    follow_count = 0
-
     try:
-        while not stop_thread:
-            followed_on_page, follow_count = follow_stargazers(driver, repo_url, page, delay, follow_count)
-            if not followed_on_page:
-                logging.info(f"No follow buttons found on page {page}. Exiting.")
-                break
-            page += 1
-    except KeyboardInterrupt:
-        logging.info("Program interrupted by user.")
-    finally:
-        logging.info(f"Total users followed: {follow_count}")
-        driver.quit()
+        driver = create_chrome_driver()
+        github_login(driver, github_username, github_password)
+
+        stop_listener = threading.Thread(target=listen_for_stop)
+        stop_listener.daemon = True  # Make thread exit when main program exits
+        stop_listener.start()
+
+        page = start_page
+        follow_count = 0
+
+        try:
+            while not stop_thread:
+                followed_on_page, follow_count = follow_stargazers(driver, repo_url, page, delay, follow_count)
+                if not followed_on_page:
+                    logging.info(f"No follow buttons found on page {page}. Exiting.")
+                    break
+                page += 1
+        except KeyboardInterrupt:
+            logging.info("Program interrupted by user.")
+        finally:
+            logging.info(f"Total users followed: {follow_count}")
+            driver.quit()
+    
+    except Exception as e:
+        logging.error(f"Failed to initialize browser: {e}")
+        print("\nTROUBLESHOOTING TIPS:")
+        print("1. Make sure Chrome is installed on your system")
+        print("2. Try installing or updating chromedriver with: 'apt-get install chromium-chromedriver'")
+        print("3. If running in a headless environment, try adding 'chrome_options.add_argument(\"--headless\")'")
+        print("4. Make sure no other Chrome processes are using the same profile")
 
 
 if __name__ == "__main__":
